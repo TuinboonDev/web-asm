@@ -65,6 +65,7 @@ section .bss
     socket_fd: resq 1
     client_fd: resq 1
     buffer: resb BUFFER_LEN
+    current_byte: resb 1
 
 section .text
 	global _start
@@ -151,8 +152,11 @@ section .text
 		mov rdx, new_connection_message_len
 		syscall
 
-        ; Send something to the client
-        mov rax, 44
+        ; TODO: switch to read and write syscall
+        ; TODO: move write
+
+        ; Send (write) something to the client
+        mov rax, 1
         mov rdi, [client_fd]
         lea rsi, [http_message]
         mov rdx, http_message_len
@@ -164,28 +168,31 @@ section .text
         test rax, rax
         js write_error
 
-        ; Receive data
-        mov rax, 45
-        mov rdi, [client_fd]
-        lea rsi, [buffer]
-        mov rdx, BUFFER_LEN
-        xor r10, r10
-        xor r8, r8
-        xor r9, r9
-        syscall
+        xor r12, r12
+        call read_line
 
-        test rax, rax
-        js read_error
+        ; ; Receive data
+        ; mov rax, 45
+        ; mov rdi, [client_fd]
+        ; lea rsi, [buffer]
+        ; mov rdx, BUFFER_LEN
+        ; xor r10, r10
+        ; xor r8, r8
+        ; xor r9, r9
+        ; syscall
 
-        ; Store the amount of bytes read
-        mov r12, rax
+        ; test rax, rax
+        ; js read_error
 
-        ; Print out the full request
-        mov rax, 1
-        mov rdi, 1
-        mov rsi, buffer
-        mov rdx, r12
-        syscall
+        ; ; Store the amount of bytes read
+        ; mov r12, rax
+
+        ; ; Print out the full request
+        ; mov rax, 1
+        ; mov rdi, 1
+        ; mov rsi, buffer
+        ; mov rdx, r12
+        ; syscall
 
         ; Shutdown syscall
         mov rax, 48
@@ -206,10 +213,55 @@ section .text
 
         jmp accept_loop
 
+    read_line:
+        ; Pointer into the buffer
+        mov rax, 0
+        mov rdi, [client_fd]
+        lea rsi, [current_byte]
+        mov rdx, 1
+        syscall
+        
+        test rax, rax
+        js read_error
+
+        ; Check if the current byte is (\r)
+        cmp byte [current_byte], 13
+        je done
+
+        ; Store the read byte into the buffer
+        mov al, [current_byte]
+        lea rbx, [buffer]
+        add rbx, r12
+        mov [rbx], al
+
+        inc r12
+
+        jmp read_line
+
+    done:
+        ; Read one more bite (\n) and return the buffer in rax
+        mov rax, 0
+        mov rdi, [client_fd]
+        lea rsi, [current_byte]
+        mov rdx, 1
+        syscall
+
+        ; Print out the read line
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, buffer
+		mov rdx, r12
+		syscall
+
+        ret
+
     sigint_handler:
+        ; Close the socket fd
         mov rax, 3
         mov rdi, [socket_fd]
         syscall
+
+        ; TODO: test result of closing
 
         mov rax, 1
         mov rdi, 1
@@ -235,6 +287,8 @@ section .text
         mov rsi, read_error_message
 		mov rdx, read_error_message_len
 		syscall
+
+        ret
 
     shutdown_error:
         mov rax, 1
