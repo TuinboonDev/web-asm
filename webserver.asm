@@ -8,6 +8,8 @@
 %define SO_REUSEADDR 2
 
 section .data
+    newline: db 10
+
     socket_error_message: db 'Error while creating socket', 10
 	socket_error_message_len: equ $-socket_error_message
 
@@ -47,6 +49,9 @@ section .data
     debug_message: db 'Successfully debuged', 10
 	debug_message_len: equ $-debug_message
 
+    space_delimiter: db ' ', 0
+    colon_delimiter: db ':', 0
+
     sockaddr:
         sin_family: dw 2
         sin_port: dw PORT
@@ -59,17 +64,24 @@ section .data
         sa_restorer: dq 0
         sa_mask: dq 0, 0
 
-    reuse_addr: dd 1
+    delimiter: db ' ', 0
+    tokens: dq 0, 0, 0 
+
 
 section .bss
     socket_fd: resq 1
     client_fd: resq 1
     buffer: resb BUFFER_LEN
     current_byte: resb 1
+    reuse_addr: resd 1
+    token_count: resq 1
+
 
 section .text
 	global _start
 
+
+    ; TODO: specific registers to store temporary values
 	_start:
         ; Socket syscall
         mov rax, 41
@@ -152,9 +164,7 @@ section .text
 		mov rdx, new_connection_message_len
 		syscall
 
-        ; TODO: switch to read and write syscall
         ; TODO: move write
-
         ; Send (write) something to the client
         mov rax, 1
         mov rdi, [client_fd]
@@ -168,31 +178,39 @@ section .text
         test rax, rax
         js write_error
 
-        xor r12, r12
+        ; Check read_line for any errors
         call read_line
+        test rax, rax
+        js read_error
 
-        ; ; Receive data
-        ; mov rax, 45
-        ; mov rdi, [client_fd]
-        ; lea rsi, [buffer]
-        ; mov rdx, BUFFER_LEN
-        ; xor r10, r10
-        ; xor r8, r8
-        ; xor r9, r9
-        ; syscall
+        ; Move return value (amount of bytes read) into r12
+        mov r12, rax
 
-        ; test rax, rax
-        ; js read_error
+        ; Move pointers into register
+        mov rdi, buffer
+        mov rsi, delimiter
+        lea rdx, [tokens]
+        call split_string
 
-        ; ; Store the amount of bytes read
-        ; mov r12, rax
+        ; Move array at index 1 to rdi
+        mov rdi, [tokens + 1*8]
+        call count_length
 
-        ; ; Print out the full request
-        ; mov rax, 1
-        ; mov rdi, 1
-        ; mov rsi, buffer
-        ; mov rdx, r12
-        ; syscall
+        ; Store the length of string at index 1 in r10
+        mov r12, rax
+        
+        ; Print out the string at index 1
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, [tokens + 1*8]
+        mov rdx, r12
+		syscall
+
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, newline
+        mov rdx, 1
+		syscall
 
         ; Shutdown syscall
         mov rax, 48
@@ -213,7 +231,60 @@ section .text
 
         jmp accept_loop
 
+    ; Counts the length of RDI and returns it into RAX
+    count_length:
+        xor rsi, rsi
+    count_length_loop:
+        mov rax, rsi
+
+        cmp byte [rdi + rsi], 0
+        je count_length_done
+
+        inc rsi
+
+        jmp count_length_loop
+
+    count_length_done:
+        ret
+
+    split_string:
+        xor r10, r10
+    next_part:
+        ; Stop at end of string
+        cmp byte [rdi], 0
+        je split_string_done
+
+        ; Store input in array
+        mov [rdx + r10*8], rdi
+        inc r10
+
+    find_delim:
+        ; Stop at end of string
+        cmp byte [rdi], 0
+        je split_string_done
+        
+        ; Check if input pointer is equal to the delimiter
+        mov al, [rdi]
+        cmp al, [rsi]
+        je split_here
+
+        ; Increment the input pointer
+        inc rdi
+        jmp find_delim
+
+    split_here:
+        ; At delimiter set byte to 0
+        mov byte [rdi], 0
+        inc rdi
+        jmp next_part
+
+    split_string_done:
+        mov [token_count], r10 
+        ret
+
     read_line:
+        xor r12, r12
+    read_line_loop:
         ; Pointer into the buffer
         mov rax, 0
         mov rdi, [client_fd]
@@ -222,11 +293,11 @@ section .text
         syscall
         
         test rax, rax
-        js read_error
+        js return_error
 
         ; Check if the current byte is (\r)
         cmp byte [current_byte], 13
-        je done
+        je read_line_done
 
         ; Store the read byte into the buffer
         mov al, [current_byte]
@@ -236,9 +307,9 @@ section .text
 
         inc r12
 
-        jmp read_line
+        jmp read_line_loop
 
-    done:
+    read_line_done:
         ; Read one more bite (\n) and return the buffer in rax
         mov rax, 0
         mov rdi, [client_fd]
@@ -246,13 +317,22 @@ section .text
         mov rdx, 1
         syscall
 
-        ; Print out the read line
-        mov rax, 1
-        mov rdi, 1
-        mov rsi, buffer
-		mov rdx, r12
-		syscall
+        test rax, rax
+        js return_error
 
+        lea rbx, [buffer]
+        add rbx, r12
+        mov byte [rbx], 0
+
+        inc r12
+
+        mov rax, r12
+
+        ret
+
+    return_error:
+        ; TODO: remove this mov because the syscall itself should store the right number in rax already
+        mov rax, -1
         ret
 
     sigint_handler:
