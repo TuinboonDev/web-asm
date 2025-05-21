@@ -3,7 +3,7 @@
 %define SA_RESTORER 0x04000000
 %define AF_INET 2
 %define SIGINT 2
-%define BUFFER_LEN 1024
+%define BUFFER_LEN 2048
 %define SOL_SOCKET 1
 %define SO_REUSEADDR 2
 
@@ -64,8 +64,8 @@ section .data
         sa_restorer: dq 0
         sa_mask: dq 0, 0
 
-    delimiter: db ' ', 0
-    tokens: dq 0, 0, 0 
+    first_line: dq 0, 0, 0
+    header: dq 0, 0
 
 
 section .bss
@@ -178,7 +178,11 @@ section .text
         test rax, rax
         js write_error
 
-        ; Check read_line for any errors
+        ; TODO: move into read_firstline function
+        ; ---
+
+        ; TODO: add input into what buffer the data should be written
+        ; Read a single line and check for any errors
         call read_line
         test rax, rax
         js read_error
@@ -186,31 +190,35 @@ section .text
         ; Move return value (amount of bytes read) into r12
         mov r12, rax
 
-        ; Move pointers into register
+        ; Move pointers into register and split string
         mov rdi, buffer
-        mov rsi, delimiter
-        lea rdx, [tokens]
+        mov rsi, space_delimiter
+        lea rdx, [first_line]
+        mov r10, 3
         call split_string
+        ; ---
 
-        ; Move array at index 1 to rdi
-        mov rdi, [tokens + 1*8]
-        call count_length
+        call read_headers
 
-        ; Store the length of string at index 1 in r10
-        mov r12, rax
+        ; ; Move array at index 1 to rdi
+        ; mov rdi, [first_line + 1*8]
+        ; call count_length
+
+        ; ; Store the length of string at index 1 in r10
+        ; mov r12, rax
         
-        ; Print out the string at index 1
-        mov rax, 1
-        mov rdi, 1
-        mov rsi, [tokens + 1*8]
-        mov rdx, r12
-		syscall
+        ; ; Print out the string at index 1
+        ; mov rax, 1
+        ; mov rdi, 1
+        ; mov rsi, [first_line + 1*8]
+        ; mov rdx, r12
+		; syscall
 
-        mov rax, 1
-        mov rdi, 1
-        mov rsi, newline
-        mov rdx, 1
-		syscall
+        ; mov rax, 1
+        ; mov rdi, 1
+        ; mov rsi, newline
+        ; mov rdx, 1
+		; syscall
 
         ; Shutdown syscall
         mov rax, 48
@@ -231,6 +239,64 @@ section .text
 
         jmp accept_loop
 
+    read_headers:
+        ; Read a single line and test for errors
+        call read_line
+        test rax, rax
+        js read_error
+
+        cmp rax, 2
+        jle done
+
+        ; Split the string at the colon
+        mov rdi, buffer
+        mov rsi, colon_delimiter
+        lea rdx, [header]
+        mov r10, 2
+        call split_string
+
+        ; Count the length of the header key
+        mov rdi, [header + 0*8]
+        call count_length
+
+        ; Store the length of string at index 1 in r10
+        mov r12, rax
+        
+        ; Print out the string at index 1
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, [header + 0*8]
+        mov rdx, r12
+		syscall
+
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, colon_delimiter
+        mov rdx, 1
+		syscall
+
+        ; Count the length of header value
+        mov rdi, [header + 1*8]
+        call count_length
+
+        ; Store the length of string at index 1 in r10
+        mov r12, rax
+        
+        ; Print out the string at index 1
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, [header + 1*8]
+        mov rdx, r12
+		syscall
+
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, newline
+        mov rdx, 1
+		syscall
+
+        jmp read_headers
+
     ; Counts the length of RDI and returns it into RAX
     count_length:
         xor rsi, rsi
@@ -238,30 +304,33 @@ section .text
         mov rax, rsi
 
         cmp byte [rdi + rsi], 0
-        je count_length_done
+        je done
 
         inc rsi
 
         jmp count_length_loop
 
-    count_length_done:
+    done:
         ret
 
     split_string:
-        xor r10, r10
+        xor r12, r12
     next_part:
         ; Stop at end of string
         cmp byte [rdi], 0
-        je split_string_done
+        je done
 
         ; Store input in array
-        mov [rdx + r10*8], rdi
-        inc r10
+        mov [rdx + r12*8], rdi
+        inc r12
+
+        cmp r12, r10
+        je done
 
     find_delim:
         ; Stop at end of string
         cmp byte [rdi], 0
-        je split_string_done
+        je done
         
         ; Check if input pointer is equal to the delimiter
         mov al, [rdi]
@@ -277,10 +346,6 @@ section .text
         mov byte [rdi], 0
         inc rdi
         jmp next_part
-
-    split_string_done:
-        mov [token_count], r10 
-        ret
 
     read_line:
         xor r12, r12
